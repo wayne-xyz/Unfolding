@@ -12,7 +12,7 @@ import SwiftData
 struct UnfoldingApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            PhotoRecord.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -30,3 +30,4 @@ struct UnfoldingApp: App {
         .modelContainer(sharedModelContainer)
     }
 }
+

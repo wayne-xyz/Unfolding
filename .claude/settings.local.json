@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild:*)",
+      "Bash(xcrun:*)",
+      "WebSearch"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
