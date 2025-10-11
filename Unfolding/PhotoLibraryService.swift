@@ -23,6 +23,50 @@ struct PhotoMetadata {
 }
 
 enum PhotoLibraryService {
+    // Request photo library authorization
+    static func requestAuthorization() async -> PHAuthorizationStatus {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status == .notDetermined {
+            return await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        }
+        return status
+    }
+
+    // Fetch all photos with geolocation and extract metadata
+    #if os(iOS)
+    static func fetchAllPhotosWithLocation() async -> [(asset: PHAsset, metadata: PhotoMetadata)] {
+        var results: [(PHAsset, PhotoMetadata)] = []
+
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        let allPhotos = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+
+        allPhotos.enumerateObjects { asset, index, stop in
+            // Only process photos with location data
+            guard let coord = asset.location?.coordinate else {
+                return
+            }
+
+            var meta = PhotoMetadata()
+            meta.assetIdentifier = asset.localIdentifier
+            meta.latitude = coord.latitude
+            meta.longitude = coord.longitude
+            meta.creationDate = asset.creationDate
+
+            // Fetch filename - this causes the warning but is necessary
+            // The warning is just performance advisory, not an error
+            let resources = PHAssetResource.assetResources(for: asset)
+            if let res = resources.first {
+                meta.filename = res.originalFilename
+            }
+
+            results.append((asset, meta))
+        }
+
+        return results
+    }
+    #endif
+    
     #if os(iOS)
     @available(iOS 16.0, *)
     static func extractMetadata(from item: PhotosPickerItem) async throws -> PhotoMetadata {

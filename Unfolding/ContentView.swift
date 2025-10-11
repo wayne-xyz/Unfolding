@@ -15,246 +15,221 @@ import AppKit
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
 
-    // Keep UI state minimal; data is loaded via repository
-    @State private var records: [PhotoRecord] = []
-    #if os(iOS)
-    @State private var pickedItem: PhotosPickerItem?
-    #else
-    @State private var showPicker = false
-    #endif
+    @State private var recordCount: Int = 0
     @State private var isBusy: Bool = false
+    @State private var progressMessage: String = ""
     @State private var errorMessage: String?
 
     var body: some View {
-        NavigationSplitView {
-            VStack(alignment: .leading, spacing: 16) {
-                // Label: current record count
-                Text("Records: \(records.count)")
+        VStack(spacing: 24) {
+            Text("Unfolding")
+                .font(.largeTitle)
+                .bold()
+
+            // Record count display
+            VStack(spacing: 8) {
+                Text("Total Records")
                     .font(.headline)
-
-                // Two buttons: Pick Photo and Delete All
-                HStack(spacing: 12) {
-                    #if os(iOS)
-                    PhotosPicker(selection: $pickedItem, matching: .images, photoLibrary: .shared()) {
-                        Label("Pick Photo", systemImage: "photo.on.rectangle")
-                    }
-                    .disabled(isBusy)
-                    #else
-                    Button {
-                        showPicker = true
-                    } label: {
-                        Label("Pick Photo", systemImage: "photo.on.rectangle")
-                    }
-                    .disabled(isBusy)
-                    #endif
-
-                    Button(role: .destructive) {
-                        Task { await deleteAll() }
-                    } label: {
-                        Label("Delete All", systemImage: "trash")
-                    }
-                    .disabled(records.isEmpty || isBusy)
-                }
-
-                if let errorMessage {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
-                        .font(.footnote)
-                        .accessibilityIdentifier("errorMessage")
-                }
-
-                // List of saved records
-                List {
-                    ForEach(records) { item in
-                        VStack(alignment: .leading, spacing: 4) {
-                            if let name = item.photoFilename, !name.isEmpty {
-                                Text("Name: \(name)")
-                                    .font(.body)
-                            }
-
-                            if let lat = item.latitude, let lon = item.longitude {
-                                Text("Location: \(lat), \(lon)")
-                                    .font(.body)
-                            } else {
-                                Text("Location: Not available")
-                                    .font(.body)
-                            }
-
-                            if let date = item.photoCreationDate {
-                                Text("Photo date: \(date, format: Date.FormatStyle(date: .abbreviated, time: .shortened))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Text("Saved: \(item.timestamp, format: Date.FormatStyle(date: .abbreviated, time: .shortened))")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-
-                            if let id = item.assetIdentifier {
-                                Text("Asset ID: \(id)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                        }
-                    }
-                    .onDelete(perform: deleteItems)
-                }
-#if os(macOS)
-                .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-#endif
+                    .foregroundStyle(.secondary)
+                Text("\(recordCount)")
+                    .font(.system(size: 60, weight: .bold))
+                    .foregroundStyle(.primary)
             }
             .padding()
-            .navigationTitle("Unfolding")
-        } detail: {
-            Text("Select a record")
-        }
-        // When a photo is picked, process and save it
-        #if os(iOS)
-        .onChange(of: pickedItem) { _, newValue in
-            Task { await handlePickedItem(newValue) }
-        }
-        #endif
-        .task {
-            await reload()
-        }
-        #if os(macOS)
-        .sheet(isPresented: $showPicker) {
-            PhotoPickerView { result in
-                Task {
-                    await handlePickerResult(result)
-                }
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.secondary.opacity(0.1))
+            )
+
+            // Progress message (shown during import)
+            if !progressMessage.isEmpty {
+                Text(progressMessage)
+                    .font(.body)
+                    .foregroundStyle(.blue)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
             }
+
+            // Error message
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+
+            // Action buttons
+            VStack(spacing: 12) {
+                Button {
+                    Task { await importAllPhotos() }
+                } label: {
+                    Label("Import All Photos", systemImage: "photo.on.rectangle.angled")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .disabled(isBusy)
+
+                Button {
+                    printRandomRecords()
+                } label: {
+                    Label("Print Random 10 Records", systemImage: "shuffle")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.green)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .disabled(recordCount == 0 || isBusy)
+
+                Button(role: .destructive) {
+                    Task { await deleteAllRecords() }
+                } label: {
+                    Label("Delete All Records", systemImage: "trash.fill")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.red.opacity(0.8))
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .disabled(recordCount == 0 || isBusy)
+            }
+            .padding(.horizontal)
+
+            Spacer()
         }
-        #endif
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task {
+            await loadRecordCount()
+        }
     }
 
     // MARK: - Actions
 
-    #if os(iOS)
-    private func handlePickedItem(_ item: PhotosPickerItem?) async {
-        guard let item else { return }
-
+    private func importAllPhotos() async {
         isBusy = true
         errorMessage = nil
+        progressMessage = "Requesting photo library access..."
 
-        defer {
-            Task { @MainActor in
-                pickedItem = nil
+        // Request authorization
+        let status = await PhotoLibraryService.requestAuthorization()
+        guard status == .authorized || status == .limited else {
+            await MainActor.run {
+                errorMessage = "Photo library access denied. Please enable in Settings."
+                progressMessage = ""
+                isBusy = false
+            }
+            return
+        }
+
+        await MainActor.run {
+            progressMessage = "Scanning photo library..."
+        }
+
+        // Fetch all photos with location
+        let photosWithLocation = await PhotoLibraryService.fetchAllPhotosWithLocation()
+
+        await MainActor.run {
+            progressMessage = "Found \(photosWithLocation.count) photos with geolocation. Importing..."
+        }
+
+        // Save to database
+        do {
+            let metadataList = photosWithLocation.map { $0.metadata }
+            let savedCount = try PhotoRecordRepository.saveBulk(context: modelContext, metadataList: metadataList)
+
+            await MainActor.run {
+                progressMessage = "Successfully imported \(savedCount) photos!"
+            }
+
+            // Wait a moment to show success message
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+            await loadRecordCount()
+            await MainActor.run {
+                progressMessage = ""
+                isBusy = false
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Failed to save photos: \(error.localizedDescription)"
+                progressMessage = ""
                 isBusy = false
             }
         }
-
-        do {
-            let meta = try await PhotoLibraryService.extractMetadata(from: item)
-            try PhotoRecordRepository.saveRecord(context: modelContext, metadata: meta)
-            await reload()
-        } catch {
-            await setError("Failed to save: \(error.localizedDescription)")
-        }
     }
-    #endif
 
-    #if os(macOS)
-    private func handlePickerResult(_ result: PHPickerResult) async {
+    private func deleteAllRecords() async {
         isBusy = true
         errorMessage = nil
-        defer {
-            Task { @MainActor in
-                showPicker = false
-                isBusy = false
-            }
-        }
-
-        do {
-            let meta = try await PhotoLibraryService.extractMetadata(from: result)
-            try PhotoRecordRepository.saveRecord(context: modelContext, metadata: meta)
-            await reload()
-        } catch {
-            await setError("Failed to save: \(error.localizedDescription)")
-        }
-    }
-    #endif
-
-    private func deleteAll() async {
-        isBusy = true
-        errorMessage = nil
-        defer { isBusy = false }
+        progressMessage = "Deleting all records..."
 
         do {
             try PhotoRecordRepository.deleteAll(context: modelContext)
-            await reload()
+
+            await MainActor.run {
+                progressMessage = "All records deleted successfully!"
+            }
+
+            // Wait a moment to show success message
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+            await loadRecordCount()
+            await MainActor.run {
+                progressMessage = ""
+                isBusy = false
+            }
         } catch {
-            await setError("Failed to delete all: \(error.localizedDescription)")
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        errorMessage = nil
-        do {
-            try PhotoRecordRepository.delete(records: records, at: offsets, context: modelContext)
-            Task { await reload() }
-        } catch {
-            Task { await setError("Failed to delete: \(error.localizedDescription)") }
-        }
-    }
-
-    @MainActor
-    private func setError(_ message: String) {
-        errorMessage = message
-    }
-
-    // MARK: - Loading
-
-    private func reload() async {
-        do {
-            records = try PhotoRecordRepository.fetchAll(context: modelContext)
-        } catch {
-            await setError("Failed to load: \(error.localizedDescription)")
-        }
-    }
-}
-
-#if os(macOS)
-@available(macOS 13.0, *)
-struct PhotoPickerView: NSViewControllerRepresentable {
-    let onSelection: (PHPickerResult) -> Void
-
-    func makeNSViewController(context: Context) -> PHPickerViewController {
-        var config = PHPickerConfiguration(photoLibrary: .shared())
-        config.selectionLimit = 1
-        config.filter = .images
-
-        let picker = PHPickerViewController(configuration: config)
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateNSViewController(_ nsViewController: PHPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onSelection: onSelection)
-    }
-
-    class Coordinator: NSObject, PHPickerViewControllerDelegate {
-        let onSelection: (PHPickerResult) -> Void
-
-        init(onSelection: @escaping (PHPickerResult) -> Void) {
-            self.onSelection = onSelection
-        }
-
-        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            if let result = results.first {
-                onSelection(result)
+            await MainActor.run {
+                errorMessage = "Failed to delete records: \(error.localizedDescription)"
+                progressMessage = ""
+                isBusy = false
             }
         }
     }
+
+    private func loadRecordCount() async {
+        do {
+            let count = try PhotoRecordRepository.count(context: modelContext)
+            await MainActor.run {
+                recordCount = count
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Failed to load count: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func printRandomRecords() {
+        errorMessage = nil
+        do {
+            let randomRecords = try PhotoRecordRepository.fetchRandom(count: 10, context: modelContext)
+            print("====== Random 10 Records ======")
+            print("Total records selected: \(randomRecords.count)")
+            print("")
+
+            for (index, record) in randomRecords.enumerated() {
+                print("[\(index + 1)] Record:")
+                print("  - Filename: \(record.photoFilename ?? "N/A")")
+                print("  - Location: (\(record.latitude ?? 0.0), \(record.longitude ?? 0.0))")
+                print("  - Creation Date: \(record.photoCreationDate?.formatted(date: .abbreviated, time: .shortened) ?? "N/A")")
+                print("  - Saved At: \(record.timestamp.formatted(date: .abbreviated, time: .shortened))")
+                print("  - Asset ID: \(record.assetIdentifier ?? "N/A")")
+                print("")
+            }
+            print("===============================")
+        } catch {
+            errorMessage = "Failed to fetch random records: \(error.localizedDescription)"
+        }
+    }
 }
-#endif
 
 #Preview {
     ContentView()
         .modelContainer(for: PhotoRecord.self, inMemory: true)
 }
-
