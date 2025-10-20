@@ -23,9 +23,28 @@ enum PhotoRecordRepository {
                          userInfo: [NSLocalizedDescriptionKey: "Photo has no geolocation data"])
         }
 
+        // Generate unique hash from assetIdentifier + filename (without extension)
+        let uniqueHash = generateUniqueHash(assetIdentifier: metadata.assetIdentifier, filename: metadata.filename)
+
+        // Check if record already exists by uniqueHash (prevent duplicates)
+        if let hash = uniqueHash {
+            let predicate = #Predicate<PhotoRecord> { record in
+                record.uniqueHash == hash
+            }
+            var descriptor = FetchDescriptor<PhotoRecord>(predicate: predicate)
+            descriptor.fetchLimit = 1
+
+            if try context.fetch(descriptor).first != nil {
+                // Record already exists - skip it (don't update, don't insert)
+                return
+            }
+        }
+
+        // Create new record if doesn't exist
         let record = PhotoRecord(
             timestamp: Date(),
             assetIdentifier: metadata.assetIdentifier,
+            uniqueHash: uniqueHash,
             latitude: metadata.latitude,
             longitude: metadata.longitude,
             photoCreationDate: metadata.creationDate,
@@ -33,6 +52,19 @@ enum PhotoRecordRepository {
         )
         context.insert(record)
         try context.save()
+    }
+
+    /// Generate unique hash from assetIdentifier + filename (without extension)
+    private static func generateUniqueHash(assetIdentifier: String?, filename: String?) -> String? {
+        guard let assetID = assetIdentifier, let filename = filename else {
+            return nil
+        }
+
+        // Remove file extension from filename
+        let filenameWithoutExtension = (filename as NSString).deletingPathExtension
+
+        // Combine assetIdentifier + filename (without extension)
+        return "\(assetID)_\(filenameWithoutExtension)"
     }
 
     static func saveBulk(context: ModelContext, metadataList: [PhotoMetadata]) throws -> Int {
@@ -43,9 +75,28 @@ enum PhotoRecordRepository {
                 continue
             }
 
+            // Generate unique hash from assetIdentifier + filename (without extension)
+            let uniqueHash = generateUniqueHash(assetIdentifier: metadata.assetIdentifier, filename: metadata.filename)
+
+            // Check if record already exists by uniqueHash (prevent duplicates)
+            if let hash = uniqueHash {
+                let predicate = #Predicate<PhotoRecord> { record in
+                    record.uniqueHash == hash
+                }
+                var descriptor = FetchDescriptor<PhotoRecord>(predicate: predicate)
+                descriptor.fetchLimit = 1
+
+                if try context.fetch(descriptor).first != nil {
+                    // Record already exists - skip it (don't update, don't insert)
+                    continue
+                }
+            }
+
+            // Create new record if doesn't exist
             let record = PhotoRecord(
                 timestamp: Date(),
                 assetIdentifier: metadata.assetIdentifier,
+                uniqueHash: uniqueHash,
                 latitude: metadata.latitude,
                 longitude: metadata.longitude,
                 photoCreationDate: metadata.creationDate,

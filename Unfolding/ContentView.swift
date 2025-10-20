@@ -23,6 +23,8 @@ struct ContentView: View {
     @State private var isCheckingCloudKit: Bool = false
     @State private var progressMessage: String = ""
     @State private var errorMessage: String?
+    @State private var username: String = ""
+    @State private var unpublishedCount: Int = 0
 
     var body: some View {
         VStack(spacing: 24) {
@@ -59,6 +61,15 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    if unpublishedCount > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.and.arrow.up")
+                                .foregroundStyle(.orange)
+                            Text("Unpublished: \(unpublishedCount)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .padding(.top, 4)
             }
@@ -86,6 +97,18 @@ struct ContentView: View {
                     .padding(.horizontal)
             }
 
+            // Username TextField
+            VStack(spacing: 8) {
+                Text("Username for Publishing")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("Enter username", text: $username)
+                    .textFieldStyle(.roundedBorder)
+                    .autocapitalization(.none)
+                    .autocorrectionDisabled()
+            }
+            .padding(.horizontal)
+
             // Action buttons
             VStack(spacing: 12) {
                 Button {
@@ -101,12 +124,24 @@ struct ContentView: View {
                 .disabled(isBusy)
 
                 Button {
+                    Task { await publishToPublicDatabase() }
+                } label: {
+                    Label("Publish to Public Database", systemImage: "square.and.arrow.up.on.square")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.green)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .disabled(unpublishedCount == 0 || username.trimmingCharacters(in: .whitespaces).isEmpty || isBusy)
+
+                Button {
                     printRandomRecords()
                 } label: {
                     Label("Print Random 10 Records", systemImage: "shuffle")
                         .frame(maxWidth: .infinity)
                         .padding()
-                        .background(Color.green)
+                        .background(Color.purple)
                         .foregroundColor(.white)
                         .cornerRadius(10)
                 }
@@ -186,6 +221,7 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
             await loadRecordCount()
+            await loadUnpublishedCount()
         }
     }
 
@@ -231,6 +267,7 @@ struct ContentView: View {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
 
             await loadRecordCount()
+            await loadUnpublishedCount()
             await MainActor.run {
                 progressMessage = ""
                 isBusy = false
@@ -260,6 +297,7 @@ struct ContentView: View {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
 
             await loadRecordCount()
+            await loadUnpublishedCount()
             await MainActor.run {
                 progressMessage = ""
                 isBusy = false
@@ -286,6 +324,96 @@ struct ContentView: View {
         }
     }
 
+    private func loadUnpublishedCount() async {
+        do {
+            let predicate = #Predicate<PhotoRecord> { record in
+                record.isPublished == false
+            }
+            let descriptor = FetchDescriptor<PhotoRecord>(predicate: predicate)
+            let count = try modelContext.fetchCount(descriptor)
+            await MainActor.run {
+                unpublishedCount = count
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Failed to load unpublished count: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func publishToPublicDatabase() async {
+        isBusy = true
+        errorMessage = nil
+        progressMessage = "Publishing records to public database..."
+
+        do {
+            print("\n========================================")
+            print("📤 Publishing to Public Database...")
+            print("========================================")
+
+            let publishedCount = try await PublicDatabaseService.publishRecords(
+                username: username,
+                context: modelContext
+            )
+
+            await MainActor.run {
+                progressMessage = "✅ Published \(publishedCount) records to public database!"
+            }
+
+            print("========================================\n")
+
+            // Wait to show success message
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+            // Reload counts
+            await loadUnpublishedCount()
+            await checkPublicCloudKit()
+
+            await MainActor.run {
+                progressMessage = ""
+                isBusy = false
+            }
+
+        } catch let error as PublicDatabaseError {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                progressMessage = ""
+                isBusy = false
+            }
+            print("❌ Publish Error: \(error.localizedDescription)")
+
+        } catch let error as CloudKitError {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                progressMessage = ""
+                isBusy = false
+            }
+            print("❌ CloudKit Error: \(error.localizedDescription)")
+
+        } catch {
+            let errorMsg: String
+            if let ckError = error as? CKError {
+                switch ckError.code {
+                case .networkUnavailable, .networkFailure:
+                    errorMsg = "Network unavailable. Check connection."
+                case .notAuthenticated:
+                    errorMsg = "Not signed in to iCloud."
+                default:
+                    errorMsg = "Publish failed: \(ckError.localizedDescription)"
+                }
+            } else {
+                errorMsg = "Publish failed: \(error.localizedDescription)"
+            }
+
+            await MainActor.run {
+                errorMessage = errorMsg
+                progressMessage = ""
+                isBusy = false
+            }
+            print("❌ Error: \(errorMsg)")
+        }
+    }
+
     private func printRandomRecords() {
         errorMessage = nil
         do {
@@ -301,6 +429,7 @@ struct ContentView: View {
                 print("  - Creation Date: \(record.photoCreationDate?.formatted(date: .abbreviated, time: .shortened) ?? "N/A")")
                 print("  - Saved At: \(record.timestamp.formatted(date: .abbreviated, time: .shortened))")
                 print("  - Asset ID: \(record.assetIdentifier ?? "N/A")")
+                print("  - Published: \(record.isPublished ? "Yes" : "No")")
                 print("")
             }
             print("===============================")
