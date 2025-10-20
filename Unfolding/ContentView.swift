@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import CloudKit
 #if os(macOS)
 import AppKit
 #endif
@@ -16,7 +17,10 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
 
     @State private var recordCount: Int = 0
+    @State private var cloudKitPrivateCount: Int? = nil
+    @State private var cloudKitPublicCount: Int? = nil
     @State private var isBusy: Bool = false
+    @State private var isCheckingCloudKit: Bool = false
     @State private var progressMessage: String = ""
     @State private var errorMessage: String?
 
@@ -34,6 +38,29 @@ struct ContentView: View {
                 Text("\(recordCount)")
                     .font(.system(size: 60, weight: .bold))
                     .foregroundStyle(.primary)
+
+                // CloudKit counts (if available)
+                VStack(spacing: 4) {
+                    if let cloudKitPrivateCount {
+                        HStack(spacing: 4) {
+                            Image(systemName: "lock.icloud.fill")
+                                .foregroundStyle(.blue)
+                            Text("Private: \(cloudKitPrivateCount)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if let cloudKitPublicCount {
+                        HStack(spacing: 4) {
+                            Image(systemName: "globe")
+                                .foregroundStyle(.green)
+                            Text("Public: \(cloudKitPublicCount)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.top, 4)
             }
             .padding()
             .background(
@@ -85,17 +112,71 @@ struct ContentView: View {
                 }
                 .disabled(recordCount == 0 || isBusy)
 
-                Button(role: .destructive) {
-                    Task { await deleteAllRecords() }
-                } label: {
-                    Label("Delete All Records", systemImage: "trash.fill")
+                HStack(spacing: 12) {
+                    Button {
+                        Task { await checkPrivateCloudKit() }
+                    } label: {
+                        HStack {
+                            if isCheckingCloudKit {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .scaleEffect(0.8)
+                            }
+                            Label(isCheckingCloudKit ? "Checking..." : "Private DB", systemImage: "lock.icloud")
+                        }
                         .frame(maxWidth: .infinity)
                         .padding()
-                        .background(Color.red.opacity(0.8))
+                        .background(Color.blue)
                         .foregroundColor(.white)
                         .cornerRadius(10)
+                    }
+                    .disabled(isBusy || isCheckingCloudKit)
+
+                    Button {
+                        Task { await checkPublicCloudKit() }
+                    } label: {
+                        HStack {
+                            if isCheckingCloudKit {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .scaleEffect(0.8)
+                            }
+                            Label(isCheckingCloudKit ? "Checking..." : "Public DB", systemImage: "globe")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.orange)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                    }
+                    .disabled(isBusy || isCheckingCloudKit)
                 }
-                .disabled(recordCount == 0 || isBusy)
+
+                HStack(spacing: 12) {
+                    Button(role: .destructive) {
+                        Task { await deleteAllRecords() }
+                    } label: {
+                        Label("Delete Local", systemImage: "trash.fill")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.red.opacity(0.8))
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .disabled(recordCount == 0 || isBusy)
+
+                    Button(role: .destructive) {
+                        Task { await deletePublicRecords() }
+                    } label: {
+                        Label("Delete Public", systemImage: "trash.slash.fill")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.orange.opacity(0.8))
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .disabled(cloudKitPublicCount == nil || cloudKitPublicCount == 0 || isBusy)
+                }
             }
             .padding(.horizontal)
 
@@ -225,6 +306,204 @@ struct ContentView: View {
             print("===============================")
         } catch {
             errorMessage = "Failed to fetch random records: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - CloudKit Check
+
+    /// Check CloudKit Private Database record count - runs in background thread
+    private func checkPrivateCloudKit() async {
+        // Set checking state on main thread
+        await MainActor.run {
+            isCheckingCloudKit = true
+            errorMessage = nil
+        }
+
+        // Perform CloudKit query in background
+        do {
+            print("\n========================================")
+            print("🔍 Checking CloudKit Private Database...")
+            print("========================================")
+
+            let count = try await CloudKitHelper.getPrivateRecordCount()
+
+            // Update UI on main thread
+            await MainActor.run {
+                cloudKitPrivateCount = count
+                isCheckingCloudKit = false
+            }
+
+            // Print results to console
+            print("✅ Private Database Record Count: \(count)")
+            print("📱 Local Record Count: \(recordCount)")
+            let difference = count - recordCount
+            if difference == 0 {
+                print("🎉 Perfect sync! Local and Private DB match.")
+            } else if difference > 0 {
+                print("⬇️  Private DB has \(difference) more records (will sync down)")
+            } else {
+                print("⬆️  Local has \(abs(difference)) more records (will sync up)")
+            }
+            print("========================================\n")
+
+        } catch let error as CloudKitError {
+            // Handle CloudKit-specific errors
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                isCheckingCloudKit = false
+                cloudKitPrivateCount = nil
+            }
+            print("❌ CloudKit Error: \(error.localizedDescription)")
+
+        } catch {
+            // Handle other errors (including CKError)
+            let errorMsg: String
+            if let ckError = error as? CKError {
+                switch ckError.code {
+                case .networkUnavailable, .networkFailure:
+                    errorMsg = "Network unavailable. Try on a real device or check network connection."
+                case .notAuthenticated:
+                    errorMsg = "Not signed in to iCloud. Check Settings."
+                case .serverResponseLost:
+                    errorMsg = "Lost connection to CloudKit. Try again."
+                default:
+                    errorMsg = "CloudKit error: \(ckError.localizedDescription)"
+                }
+            } else {
+                errorMsg = "Private DB check failed: \(error.localizedDescription)"
+            }
+
+            await MainActor.run {
+                errorMessage = errorMsg
+                isCheckingCloudKit = false
+                cloudKitPrivateCount = nil
+            }
+            print("❌ Error: \(errorMsg)")
+        }
+    }
+
+    /// Check CloudKit Public Database record count - runs in background thread
+    private func checkPublicCloudKit() async {
+        // Set checking state on main thread
+        await MainActor.run {
+            isCheckingCloudKit = true
+            errorMessage = nil
+        }
+
+        // Perform CloudKit query in background
+        do {
+            print("\n========================================")
+            print("🌍 Checking CloudKit Public Database...")
+            print("========================================")
+
+            let count = try await CloudKitHelper.getPublicRecordCount()
+
+            // Update UI on main thread
+            await MainActor.run {
+                cloudKitPublicCount = count
+                isCheckingCloudKit = false
+            }
+
+            // Print results to console
+            print("✅ Public Database Record Count: \(count)")
+            print("🌍 These are publicly shared photo points")
+            print("========================================\n")
+
+        } catch let error as CloudKitError {
+            // Handle CloudKit-specific errors
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                isCheckingCloudKit = false
+                cloudKitPublicCount = nil
+            }
+            print("❌ CloudKit Error: \(error.localizedDescription)")
+
+        } catch {
+            // Handle other errors (including CKError)
+            let errorMsg: String
+            if let ckError = error as? CKError {
+                switch ckError.code {
+                case .networkUnavailable, .networkFailure:
+                    errorMsg = "Network unavailable. Try on a real device or check network connection."
+                case .notAuthenticated:
+                    errorMsg = "Not signed in to iCloud. Check Settings."
+                case .serverResponseLost:
+                    errorMsg = "Lost connection to CloudKit. Try again."
+                default:
+                    errorMsg = "CloudKit error: \(ckError.localizedDescription)"
+                }
+            } else {
+                errorMsg = "Public DB check failed: \(error.localizedDescription)"
+            }
+
+            await MainActor.run {
+                errorMessage = errorMsg
+                isCheckingCloudKit = false
+                cloudKitPublicCount = nil
+            }
+            print("❌ Error: \(errorMsg)")
+        }
+    }
+
+    // MARK: - Delete Public Records
+
+    /// Delete all public database records created by this user
+    private func deletePublicRecords() async {
+        isBusy = true
+        errorMessage = nil
+        progressMessage = "Deleting public records..."
+
+        do {
+            print("\n========================================")
+            print("🗑️  Deleting Public Database Records...")
+            print("========================================")
+
+            let deletedCount = try await CloudKitHelper.deleteAllPublicRecords()
+
+            await MainActor.run {
+                progressMessage = "✅ Deleted \(deletedCount) public records!"
+                cloudKitPublicCount = 0  // Reset count after deletion
+            }
+
+            print("========================================\n")
+
+            // Wait to show success message
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+            await MainActor.run {
+                progressMessage = ""
+                isBusy = false
+            }
+
+        } catch let error as CloudKitError {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                progressMessage = ""
+                isBusy = false
+            }
+            print("❌ CloudKit Error: \(error.localizedDescription)")
+
+        } catch {
+            let errorMsg: String
+            if let ckError = error as? CKError {
+                switch ckError.code {
+                case .networkUnavailable, .networkFailure:
+                    errorMsg = "Network unavailable. Check connection."
+                case .notAuthenticated:
+                    errorMsg = "Not signed in to iCloud."
+                default:
+                    errorMsg = "Delete failed: \(ckError.localizedDescription)"
+                }
+            } else {
+                errorMsg = "Delete failed: \(error.localizedDescription)"
+            }
+
+            await MainActor.run {
+                errorMessage = errorMsg
+                progressMessage = ""
+                isBusy = false
+            }
+            print("❌ Error: \(errorMsg)")
         }
     }
 }
