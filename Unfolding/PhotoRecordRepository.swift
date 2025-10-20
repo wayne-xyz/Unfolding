@@ -12,8 +12,8 @@ enum PhotoRecordRepository {
     }
 
     static func count(context: ModelContext) throws -> Int {
-        // For iOS 17, fetch and count; replace with fetchCount when available
-        return try fetchAll(context: context).count
+        let descriptor = FetchDescriptor<PhotoRecord>()
+        return try context.fetchCount(descriptor)
     }
 
     static func saveRecord(context: ModelContext, metadata: PhotoMetadata) throws {

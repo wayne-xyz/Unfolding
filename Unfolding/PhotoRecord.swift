@@ -11,7 +11,7 @@ import SwiftData
 @Model
 final class PhotoRecord {
     // When the record was saved into SwiftData
-    var timestamp: Date
+    var timestamp: Date = Date()
 
     // The Photos asset identifier of the picked photo (if any)
     var assetIdentifier: String?

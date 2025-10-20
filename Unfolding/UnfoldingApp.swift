@@ -14,7 +14,13 @@ struct UnfoldingApp: App {
         let schema = Schema([
             PhotoRecord.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+
+        // Configure ModelConfiguration with CloudKit sync
+        let modelConfiguration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: false,
+            cloudKitDatabase: .private("iCloud.com.aequatione.unfolding")
+        )
 
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
